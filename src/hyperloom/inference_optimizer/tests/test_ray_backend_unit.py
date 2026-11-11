@@ -1501,12 +1501,38 @@ def test_every_caller_of_the_backend_shares_one_connect(monkeypatch: pytest.Monk
     monkeypatch.setattr(rr, "ensure_ray_cluster", lambda *, num_gpus=None: calls.append(("cluster", num_gpus)))
     monkeypatch.setattr(rr, "quiet_ray_init", lambda *, num_gpus=None: calls.append(("connect", num_gpus)))
     monkeypatch.setattr(rb, "_BACKEND", None)
+    # ensure() now asserts the cluster can see a GPU, so the stub has to report one.
+    monkeypatch.setitem(sys.modules, "ray", types.SimpleNamespace(cluster_resources=lambda: {"GPU": 3}))
     monkeypatch.setenv("INFERENCE_OPTIMIZER_RAY_NUM_GPUS", "3")
 
     rb.get_ray_backend().ensure()
     rb.get_ray_backend().ensure()
 
     assert calls == [("cluster", 3), ("connect", 3)]
+
+
+def test_backend_ensure_fails_fast_on_a_zero_gpu_cluster(monkeypatch: pytest.MonkeyPatch):
+    """A reachable cluster proves nothing about what it can run."""
+    from hyperloom.orchestrator.actions.executors import _ray_runtime as rr
+
+    monkeypatch.setattr(rr, "ensure_ray_cluster", lambda *, num_gpus=None: None)
+    monkeypatch.setattr(rr, "quiet_ray_init", lambda *, num_gpus=None: None)
+    monkeypatch.setitem(sys.modules, "ray", types.SimpleNamespace(cluster_resources=lambda: {"GPU": 0}))
+    monkeypatch.delenv("INFERENCE_OPTIMIZER_RAY_NUM_GPUS", raising=False)
+
+    with pytest.raises(RuntimeError, match="reports 0 GPU"):
+        rb.RayExecutionBackend().ensure()
+
+
+def test_backend_ensure_skips_the_check_when_zero_gpus_were_asked_for(monkeypatch: pytest.MonkeyPatch):
+    """An operator who explicitly asks for a CPU-only cluster gets one, not an error."""
+    from hyperloom.orchestrator.actions.executors import _ray_runtime as rr
+
+    monkeypatch.setattr(rr, "ensure_ray_cluster", lambda *, num_gpus=None: None)
+    monkeypatch.setattr(rr, "quiet_ray_init", lambda *, num_gpus=None: None)
+    monkeypatch.setenv("INFERENCE_OPTIMIZER_RAY_NUM_GPUS", "0")
+
+    rb.RayExecutionBackend().ensure()  # must not raise, nor need `ray` importable
 
 
 # ── coverage: ServingLease ensure/close + make_serving_actor ─
